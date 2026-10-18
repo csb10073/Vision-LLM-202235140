@@ -56,7 +56,7 @@ python hw2.py
 
 ## 참고 사항
 
-### Topology 선택 이유
+### Morphology 선택 이유
 - 침식, 팽창, opening, closing을 iterations = 3으로 설정한 결과이다.(output-2.png)
 
 - 아래 결과를 보면 opening에서 가장 결과가 좋다.
