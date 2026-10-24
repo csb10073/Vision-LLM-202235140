@@ -5,7 +5,7 @@
 
 카메라로 종이에 그린 건반을 찾고, 한 손의 검지를 구부려 도·레·미·파·솔을 연주하는 Python 프로젝트입니다. OpenCV로 건반 영역을 검출하고 MediaPipe로 검지 위치와 관절 각도를 계산합니다.
 
-현재 실행 대상은 **Windows PC**입니다. Jetson CSI 카메라용 코드도 포함되어 있지만, 소리 출력은 Windows 전용이므로 Jetson에서 그대로 실행되지는 않습니다.
+Windows PC와 **Jetson Orin Nano + USB 웹캠**에서 사용할 수 있도록 카메라 입력과 소리 출력을 구성했습니다. USB 웹캠을 기본값으로 사용하며, Jetson에서는 기존 CSI 카메라 방식도 선택할 수 있습니다. 실제 Jetson 장치에서의 카메라·소리 출력은 별도 확인이 필요합니다.
 
 ## 1. 준비 사항과 의존성
 
@@ -25,7 +25,7 @@
 | `opencv-contrib-python` | 5.0.0.93 | 카메라 입력, 영상 처리, contour 검출, 화면 표시 |
 | `numpy` | 2.4.6 | 영상 배열과 Closing 커널 생성 |
 
-`time`, `math`, `platform`, `threading`, `winsound`는 Python 표준 라이브러리이므로 별도 설치하지 않습니다. `winsound`는 Windows에서만 제공됩니다.
+소리 출력에는 추가 패키지 `sounddevice`를 사용합니다. NumPy로 음의 파형을 만들므로 별도의 WAV 파일은 필요하지 않습니다. `time`, `math`, `platform`, `os`는 Python 표준 라이브러리이므로 별도 설치하지 않습니다.
 
 OpenCV 패키지는 `cv2`라는 같은 모듈 이름을 사용하므로 **`opencv-contrib-python` 하나만 사용하는 새 가상환경**이 권장됩니다. `opencv-python`을 중복 설치하거나 화면 표시 기능이 빠진 `headless` 패키지를 사용하는 구성은 피하는 편이 좋습니다. MediaPipe의 추가 의존성은 `pip`가 함께 설치합니다. [OpenCV 패키지 안내](https://pypi.org/project/opencv-contrib-python/5.0.0.93/)
 
@@ -46,7 +46,7 @@ vision-llm-work/
     ├── hand.py              # MediaPipe 모델 로딩, 한 손 추적, 관절 표시
     ├── piano_keys.py        # 건반 contour 검출과 검지 위치에 해당하는 음 판정
     ├── press_gestures.py    # 검지 관절 각도 계산과 누름/해제 상태 관리
-    └── scale.py             # 음별 주파수를 winsound.Beep로 재생
+    └── scale.py             # 음별 전자음을 생성해 sounddevice로 재생
 ```
 
 모델이 있는 `src`도 포함해 저장소 전체를 내려받아야 합니다. Python 파일 폴더만 따로 내려받으면 위 상대 경로에서 모델을 찾을 수 없습니다.
@@ -65,6 +65,7 @@ cd .\piano
 py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install --upgrade pip
 .\.venv\Scripts\python.exe -m pip install mediapipe==1.1.1 opencv-contrib-python==5.0.0.93 numpy==2.4.6
+.\.venv\Scripts\python.exe -m pip install sounddevice
 .\.venv\Scripts\python.exe -m pip check
 ```
 
@@ -175,20 +176,38 @@ Closing은 **`K`로 고정하기 전 건반 검출**에 사용됩니다. 고정 
 | `project1.py`의 `KEY_POSITION_MEMORY_SECONDS` | `0.5` | 직전 건반 위치의 유효 시간 |
 | `project1.py`의 `NOTE_LABEL_DURATION_SECONDS` | `0.5` | 화면에 음 이름을 표시하는 시간 |
 | `scale.py`의 `NOTE_DURATION_MS` | `200` | 한 음의 재생 시간. 화면 표시 시간과 별도 |
-| `camera.py`의 Windows 카메라 설정 | `640×480`, `30 FPS` | 카메라에 요청하는 해상도와 속도. 실제 적용은 장치에 따라 다름 |
+| `camera.py`의 USB 카메라 설정 | `640×480`, `30 FPS` | 카메라에 요청하는 해상도와 속도. 실제 적용은 장치에 따라 다름 |
+| `camera.py`의 `CAMERA_INDEX` / `CSI_SENSOR_ID` | 각각 `0` | USB 카메라 번호 / CSI 카메라 번호 |
+| `camera.py`의 `FLIP_DIRECTION` | USB는 `1`, CSI는 `0` | `1`: 좌우, `0`: 상하, `-1`: 둘 다 반전. `None`이면 반전 없음 |
+| `scale.py`의 `VOLUME` | `0.25` | 생성하는 전자음의 크기. 출력 장치 음량과 별도 |
 
-음은 실제 피아노 녹음 대신 `262`, `294`, `330`, `349`, `392 Hz`의 전자음으로 생성합니다. 소리 재생은 별도 스레드에서 실행하지만 빠른 연타, 여러 음 동시 재생, 일정한 반응 시간은 보장하지 않습니다.
+음은 실제 피아노 녹음 대신 `262`, `294`, `330`, `349`, `392 Hz`의 전자음으로 생성합니다. 소리가 끝날 때까지 영상 처리를 기다리지 않는 비동기 재생을 사용하며, 새 음을 재생하면 이전 음은 중단됩니다. 여러 음을 동시에 재생하지 않으며, 장치별 반응 시간은 별도 확인이 필요합니다.
 
 
-## 8. Jetson 및 다른 운영체제 참고 사항
+## 8. Jetson Orin Nano 실행 설정
 
-현재 버전은 `scale.py`가 Windows 전용 `winsound`를 불러오므로 **Jetson·일반 Linux·macOS에서 그대로 실행할 수 없습니다**. Jetson으로 옮길 때에는 다음 항목의 조정과 장치 검증이 필요합니다.
+Jetson에서는 기존에 MediaPipe와 NumPy가 동작하는 Python 환경을 기준으로 다음 소리 출력 의존성을 추가할 수 있습니다. `python3`는 프로그램 실행에 사용하는 Python을 의미합니다. Linux의 `sounddevice`는 PortAudio가 필요할 수 있습니다. [sounddevice 설치 안내](https://python-sounddevice.readthedocs.io/en/latest/installation.html)
 
-- **소리:** Linux에서 사용할 수 있는 오디오 구현으로 교체해야 합니다. 외부 WAV가 없어도 파형을 메모리에서 생성해 재생하는 방식으로 구현할 수 있지만, 현재 코드에는 포함되어 있지 않습니다. 스피커 등 출력 장치도 필요합니다.
-- **카메라:** 현재 Windows 이외의 분기는 Jetson CSI 카메라용 `nvarguscamerasrc`를 사용합니다. USB 웹캠에는 V4L2 방식 등 별도 입력 구성이 필요합니다.
-- **OpenCV:** Jetson의 현재 CSI 입력 코드를 사용하려면 GStreamer 지원과 NVIDIA 카메라 플러그인이 필요합니다. Windows 설치 명령만으로 이 조건이 충족되지는 않습니다.
-- **설치 환경:** Jetson 모델, JetPack, Python과 ARM64에 맞는 MediaPipe 패키지 조합을 확인해야 합니다. Windows의 `.venv`를 그대로 옮겨 사용할 수 없습니다.
-- **방향과 성능:** 현재 Jetson 파이프라인은 `1280×720`, `30 FPS`를 요청하며 화면을 상하 반전합니다. 장착 방향에 맞는 반전과 처리 해상도 조정이 필요할 수 있고, GPU 가속이나 실시간 성능은 검증되지 않았습니다.
+```bash
+sudo apt-get install libportaudio2
+python3 -m pip install sounddevice
+```
+
+다음 명령은 기존 프로젝트에서 모델을 찾을 수 있는 작업 폴더에서 실행하는 예시입니다. `project1.py`가 다른 폴더에 있으면 해당 Python 파일 경로를 사용합니다.
+
+| 카메라 | 연결 방식 | 실행 예시 |
+| --- | --- | --- |
+| USB 웹캠 | USB 포트 | `python3 project1.py` |
+| CSI | 리본 케이블 | `PIANO_CAMERA=csi python3 project1.py` |
+
+`PIANO_CAMERA`를 생략하면 USB 웹캠을 사용합니다. `PIANO_CAMERA=usb`로 명시해도 같습니다. Jetson USB는 V4L2로 열고, CSI는 기존 `nvarguscamerasrc` 파이프라인으로 엽니다. `camera.py`의 `CAMERA_INDEX`와 `CSI_SENSOR_ID`로 각 카메라 번호를 조정할 수 있습니다.
+
+- **소리:** 운영체제의 기본 출력 장치로 재생합니다. HDMI/DisplayPort 모니터나 USB 오디오 등 실제 연결된 출력 장치와 음량이 설정되어 있어야 합니다. `python3 -m sounddevice`로 장치 목록을 확인할 수 있습니다.
+- **소리만 확인:** 프로젝트 파일 폴더에서 `python3 -c "import scale; import sounddevice as sd; scale.play_note('Do'); sd.wait()"`로 200ms 전자음을 확인할 수 있습니다. 이 명령은 손 인식 모델을 불러오지 않습니다.
+- **OpenCV:** CSI 입력에는 GStreamer 지원과 NVIDIA 카메라 플러그인이 필요합니다. 실행에 사용할 Python에서 `python3 -c "import cv2; print(cv2.getBuildInformation())"`의 `GStreamer: YES`를 확인할 수 있습니다. Windows용 OpenCV 설치 명령을 Jetson에 그대로 적용하면 현재 사용 중인 OpenCV가 바뀔 수 있습니다.
+- **화면:** 기존 `cv2.imshow` 창과 `K`·`Q` 입력을 사용하므로 모니터가 연결된 데스크톱 환경을 전제로 합니다.
+- **방향과 성능:** CSI는 기존 `1280×720`, `30 FPS` 요청과 상하 반전을 유지합니다. USB는 `640×480`, `30 FPS` 요청과 좌우 반전을 사용합니다. 장착 방향이 다르면 `FLIP_DIRECTION`을 조정할 수 있습니다. GPU 가속이나 실시간 성능은 Jetson에서 검증되지 않았습니다.
+- **설치 환경:** JetPack, Python과 ARM64에 맞는 MediaPipe·OpenCV·NumPy 조합이 필요합니다. Windows의 `.venv`는 Jetson으로 복사해서 사용할 수 없습니다.
 
 ## 참고 문서
 
@@ -196,4 +215,5 @@ Closing은 **`K`로 고정하기 전 건반 검출**에 사용됩니다. 고정 
 - [MediaPipe 1.1.1 배포 정보](https://pypi.org/project/mediapipe/1.1.1/)
 - [OpenCV 설치 및 패키지 선택 안내](https://pypi.org/project/opencv-contrib-python/5.0.0.93/)
 - [NumPy 2.4.6 배포 정보](https://pypi.org/project/numpy/2.4.6/)
-- [Python winsound 문서](https://docs.python.org/3/library/winsound.html)
+- [sounddevice 설치 안내](https://python-sounddevice.readthedocs.io/en/latest/installation.html)
+- [sounddevice 비동기 재생 안내](https://python-sounddevice.readthedocs.io/en/latest/api/convenience-functions.html)
