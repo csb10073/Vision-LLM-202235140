@@ -24,14 +24,14 @@ torch.manual_seed(seed)
 transform = transforms.ToTensor()
 
 train_dataset = datasets.MNIST(
-    root="src/datasets",
+    root="../src/datasets",
     train=True,
     transform=transform,
     download=True,
 )
 
 test_dataset = datasets.MNIST(
-    root="src/datasets",
+    root="../src/datasets",
     train=False,
     transform=transform,
     download=True,
